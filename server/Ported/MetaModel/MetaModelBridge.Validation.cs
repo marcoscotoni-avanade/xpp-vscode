@@ -81,12 +81,12 @@ namespace XppVsCode.Server.MetaModel
                 {
                     try
                     {
-                        object expected = ParseTypedMetadataToNode(req.ObjectType, req.TypedMetadataJson);
-                        // With "$type" the request may set subtype properties that the proxy-based read omits;
+                        object expected = PrepareTypedMetadata(req.ObjectType, req.TypedMetadataJson, out bool hasSubtypes);
+                        // Subtype properties may be omitted by the proxy-based read;
                         // compare against the object's full graph then.
                         string actualJson = readResult.TypedMetadataJson;
                         object actual = null;
-                        if (req.TypedMetadataJson.Contains("\"$type\""))
+                        if (hasSubtypes)
                         {
                             object live = ReadViaMetadataProvider(req.ObjectType, req.ObjectName, out _);
                             string full = live != null ? BuildFullGraphJson(live) : null;

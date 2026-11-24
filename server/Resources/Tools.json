@@ -51,7 +51,7 @@
           },
           "typedMetadata": {
             "type": "object",
-            "description": "Full strongly-typed metadata graph for the target object type. Preferred for complete metadata writes across all object types."
+            "description": "Full strongly-typed metadata graph for the target object type. Preferred for complete metadata writes across all object types. For AxForm Design.Controls and nested controls, supply Type (e.g. Grid, String) or $type with the concrete metadata class (e.g. AxFormGridControl, AxFormStringControl); container-specific properties and child Controls require the correct control type."
           },
           "declaration": {
             "type": "string",
@@ -577,7 +577,7 @@
           },
           "typedMetadata": {
             "type": "object",
-            "description": "Full strongly-typed metadata graph for complete metadata updates across all object types."
+            "description": "Full strongly-typed metadata graph for complete metadata updates across all object types. For AxForm Design.Controls and nested controls, supply Type (e.g. Grid, String) or $type with the concrete metadata class (e.g. AxFormGridControl, AxFormStringControl)."
           },
           "declaration": {
             "type": "string",

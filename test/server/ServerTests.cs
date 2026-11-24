@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.Remoting.Messaging;
 using System.Runtime.Remoting.Proxies;
 using System.Web.Script.Serialization;
@@ -13,6 +14,73 @@ using Xunit;
 
 namespace XppVsCode.Server.Tests
 {
+    public class FormTypedMetadataTests
+    {
+        private static object NewForm()
+        {
+            var field = typeof(MetaModelBridge).GetField("FormControlClasses", BindingFlags.NonPublic | BindingFlags.Static);
+            var types = (Dictionary<string, Type>)field.GetValue(null);
+            Type formType = types["Grid"].Assembly.GetType("Microsoft.Dynamics.AX.Metadata.MetaModel.AxForm", true);
+            return Activator.CreateInstance(formType);
+        }
+
+        [Fact]
+        public void TypeCreatesNestedConcreteControlsAndPreservesBindings()
+        {
+            const string json = "{\"Name\":\"ExampleReviewIssue\","
+                + "\"DataSources\":[{\"Name\":\"ExampleReviewIssue\",\"Table\":\"ExampleReviewIssue\","
+                + "\"AllowCreate\":\"No\",\"AllowDelete\":\"No\",\"AllowEdit\":\"No\"}],"
+                + "\"Design\":{\"Name\":\"Design\",\"Pattern\":\"SimpleList\",\"Caption\":\"@Example:ReviewIssueTable\",\"Controls\":["
+                + "{\"Name\":\"ReviewActionPane\",\"Type\":\"ActionPane\"},"
+                + "{\"Name\":\"ReviewGrid\",\"Type\":\"Grid\",\"DataSource\":\"ExampleReviewIssue\","
+                + "\"Controls\":[{\"Name\":\"RunId\",\"Type\":\"String\",\"DataSource\":\"ExampleReviewIssue\",\"DataField\":\"RunId\"},"
+                + "{\"Name\":\"Severity\",\"Type\":\"ComboBox\",\"DataSource\":\"ExampleReviewIssue\",\"DataField\":\"Severity\"},"
+                + "{\"Name\":\"IssueType\",\"Type\":\"ComboBox\",\"DataSource\":\"ExampleReviewIssue\",\"DataField\":\"IssueType\"},"
+                + "{\"Name\":\"Message\",\"Type\":\"String\",\"DataSource\":\"ExampleReviewIssue\",\"DataField\":\"Message\"},"
+                + "{\"Name\":\"SalesId\",\"Type\":\"String\",\"DataSource\":\"ExampleReviewIssue\",\"DataField\":\"SalesId\"},"
+                + "{\"Name\":\"Worker\",\"Type\":\"Int64\",\"DataSource\":\"ExampleReviewIssue\",\"DataField\":\"Worker\"}]}]}}";
+            object form = NewForm();
+            MetaModelBridge.ApplyTypedMetadataGraph(form, "AxForm", json);
+            object design = form.GetType().GetProperty("Design").GetValue(form);
+            var controls = ((System.Collections.IEnumerable)design.GetType().GetProperty("Controls").GetValue(design)).Cast<object>().ToArray();
+            Assert.Equal("AxFormActionPaneControl", controls[0].GetType().Name);
+            Assert.Equal("AxFormGridControl", controls[1].GetType().Name);
+            Assert.Equal("ExampleReviewIssue", controls[1].GetType().GetProperty("DataSource").GetValue(controls[1]));
+            var columns = ((System.Collections.IEnumerable)controls[1].GetType().GetProperty("Controls").GetValue(controls[1])).Cast<object>().ToArray();
+            Assert.Equal(new[] { "AxFormStringControl", "AxFormComboBoxControl", "AxFormComboBoxControl", "AxFormStringControl", "AxFormStringControl", "AxFormInt64Control" }, columns.Select(c => c.GetType().Name));
+            Assert.Equal("RunId", columns[0].GetType().GetProperty("DataField").GetValue(columns[0]));
+
+            var expected = (Dictionary<string, object>)MetaModelBridge.PrepareTypedMetadata("AxForm", json, out bool hasSubtypes);
+            Assert.True(hasSubtypes);
+            var expectedDesign = (Dictionary<string, object>)expected["Design"];
+            var expectedControls = (object[])expectedDesign["Controls"];
+            Assert.Equal("AxFormGridControl", ((Dictionary<string, object>)expectedControls[1])["$type"]);
+        }
+
+        [Fact]
+        public void UnknownControlTypesAndPropertiesFailBeforeApplying()
+        {
+            var badType = Assert.Throws<InvalidOperationException>(() => MetaModelBridge.ApplyTypedMetadataGraph(
+                NewForm(), "AxForm", "{\"Design\":{\"Controls\":[{\"Name\":\"Grid\",\"Type\":\"Gird\"}]}}"));
+            Assert.Contains("typedMetadata.Design.Controls[0].Type", badType.Message);
+
+            var badProperty = Assert.Throws<InvalidOperationException>(() => MetaModelBridge.ApplyTypedMetadataGraph(
+                NewForm(), "AxForm", "{\"Design\":{\"Controls\":[{\"Name\":\"Grid\",\"Type\":\"Grid\",\"DataSorce\":\"X\"}]}}"));
+            Assert.Contains("typedMetadata.Design.Controls[0].DataSorce", badProperty.Message);
+        }
+
+        [Fact]
+        public void ExplicitSubtypeContinuesToWork()
+        {
+            object form = NewForm();
+            MetaModelBridge.ApplyTypedMetadataGraph(form, "AxForm",
+                "{\"Design\":{\"Controls\":[{\"Name\":\"Grid\",\"$type\":\"AxFormGridControl\",\"DataSource\":\"Review\"}]}}");
+            object design = form.GetType().GetProperty("Design").GetValue(form);
+            object grid = ((System.Collections.IEnumerable)design.GetType().GetProperty("Controls").GetValue(design)).Cast<object>().Single();
+            Assert.Equal("AxFormGridControl", grid.GetType().Name);
+        }
+    }
+
     public class JsonEscapingTests
     {
         [Theory]

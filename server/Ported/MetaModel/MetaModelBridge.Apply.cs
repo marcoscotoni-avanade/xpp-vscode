@@ -309,14 +309,14 @@ namespace XppVsCode.Server.MetaModel
                 ApplyProperties(target, req.Properties);
         }
 
-        private static void ApplyTypedMetadataGraph(object target, string objectType, string typedMetadataJson)
+        internal static void ApplyTypedMetadataGraph(object target, string objectType, string typedMetadataJson)
         {
             if (target == null || string.IsNullOrWhiteSpace(typedMetadataJson)) return;
             CheckTypedMetadataKeys(target.GetType(), typedMetadataJson);
+            object parsed = PrepareTypedMetadata(objectType, typedMetadataJson, out _);
 
             try
             {
-                object parsed = ParseTypedMetadataToNode(objectType, typedMetadataJson);
                 var dict = parsed as Dictionary<string, object>;
                 if (dict == null) return;
 
@@ -339,6 +339,55 @@ namespace XppVsCode.Server.MetaModel
             }
         }
 
+        internal static object PrepareTypedMetadata(string objectType, string json, out bool hasSubtypes)
+        {
+            hasSubtypes = json.Contains("\"$type\"") || json.Contains("\"__type\"");
+            if (string.Equals(objectType, "AxForm", StringComparison.OrdinalIgnoreCase))
+            {
+                var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue, RecursionLimit = 64 };
+                var root = serializer.DeserializeObject(json) as Dictionary<string, object>;
+                var design = GetFormNodeValue(root, "Design") as Dictionary<string, object>;
+                if (NormalizeFormControls(GetFormNodeValue(design, "Controls"), "typedMetadata.Design.Controls"))
+                    hasSubtypes = true;
+                if (hasSubtypes) return root;
+            }
+            return ParseTypedMetadataToNode(objectType, json);
+        }
+
+        private static bool NormalizeFormControls(object controls, string path)
+        {
+            bool normalized = false;
+            var items = ToObjectArray(controls);
+            if (items == null) return false;
+            for (int i = 0; i < items.Length; i++)
+            {
+                if (!(items[i] is Dictionary<string, object> control)) continue;
+                string itemPath = path + "[" + i + "]";
+                object kind = GetFormNodeValue(control, "Type");
+                if (kind != null && GetFormNodeValue(control, "$type") == null && GetFormNodeValue(control, "__type") == null)
+                {
+                    string name = Convert.ToString(kind)?.Trim();
+                    Type subtype = string.IsNullOrEmpty(name) ? null : ResolveSubtype(typeof(AxFormControl), "AxForm" + name + "Control");
+                    if (subtype == null || subtype.IsAbstract)
+                        throw new InvalidOperationException(itemPath + ".Type: unknown form control type '" + name
+                            + "'. Use a valid Type or the concrete \"$type\" from xpp_get_object_type_schema. Nothing was applied.");
+                    control["$type"] = subtype.Name;
+                    normalized = true;
+                }
+                if (NormalizeFormControls(GetFormNodeValue(control, "Controls"), itemPath + ".Controls"))
+                    normalized = true;
+            }
+            return normalized;
+        }
+
+        private static object GetFormNodeValue(Dictionary<string, object> node, string key)
+        {
+            if (node == null) return null;
+            foreach (var item in node)
+                if (string.Equals(item.Key, key, StringComparison.OrdinalIgnoreCase)) return item.Value;
+            return null;
+        }
+
         private static object ParseTypedMetadataToNode(string objectType, string typedMetadataJson)
         {
             var serializer = new JavaScriptSerializer
@@ -349,7 +398,8 @@ namespace XppVsCode.Server.MetaModel
 
             // Proxies model only the base types; "$type" (as written by xpp_read_object) names a subtype whose
             // extra properties (e.g. DataField of AxDataEntityViewMappedField) the proxy would drop.
-            Type proxyType = typedMetadataJson.Contains("\"$type\"") ? null : ResolveProxyType(objectType);
+            Type proxyType = typedMetadataJson.Contains("\"$type\"") || typedMetadataJson.Contains("\"__type\"")
+                ? null : ResolveProxyType(objectType);
             if (proxyType != null)
             {
                 object proxyObj = serializer.Deserialize(typedMetadataJson, proxyType);
@@ -725,8 +775,19 @@ namespace XppVsCode.Server.MetaModel
         private static void CheckTypedMetadataKeys(Type targetType, string typedMetadataJson)
         {
             var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue, RecursionLimit = 64 };
+            var node = serializer.DeserializeObject(typedMetadataJson) as Dictionary<string, object>;
+            if (typeof(AxForm).IsAssignableFrom(targetType))
+            {
+                var design = GetFormNodeValue(node, "Design") as Dictionary<string, object>;
+                NormalizeFormControls(GetFormNodeValue(design, "Controls"), "typedMetadata.Design.Controls");
+            }
+            CheckTypedMetadataKeys(targetType, node);
+        }
+
+        private static void CheckTypedMetadataKeys(Type targetType, Dictionary<string, object> node)
+        {
             var unknown = new List<string>();
-            CollectUnknownKeys(targetType, serializer.DeserializeObject(typedMetadataJson) as Dictionary<string, object>, "typedMetadata", unknown, 0);
+            CollectUnknownKeys(targetType, node, "typedMetadata", unknown, 0);
             if (unknown.Count > 0)
                 throw new InvalidOperationException("unknown properties: " + string.Join(", ", unknown.Take(20))
                     + ". Check the names with xpp_get_object_type_schema or xpp_read_object. Nothing was applied.");
